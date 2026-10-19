@@ -491,6 +491,17 @@ const char* ncclTopoGdrModeStr[ncclTopoGdrModeNum] = {"Disabled", "Default", "PC
 // On C2C platforms use GDRDMA on NICs which are connected to the CPUs
 NCCL_PARAM(NetGdrC2c, "NET_GDR_C2C", 1);
 
+static ncclResult_t ncclTopoGetDmaBufMapping(struct ncclTopoSystem* system, int gpuIndex, int distance,
+                                             enum ncclTopoGdrMode* mapping) {
+  int cpuIndex;
+  NCCLCHECK(ncclGetLocalCpu(system, gpuIndex, &cpuIndex));
+
+  struct ncclTopoNode* gpu = system->nodes[GPU].nodes + gpuIndex;
+  *mapping = gpu->paths[CPU][cpuIndex].type == PATH_C2C && distance != PATH_P2C ? ncclTopoGdrModePci
+                                                                                : ncclTopoGdrModeDefault;
+  return ncclSuccess;
+}
+
 ncclResult_t ncclTopoCheckGdr(struct ncclTopoSystem* system, int rank, int64_t netId, int read,
                               enum ncclTopoGdrMode* gdrMode) {
   *gdrMode = ncclTopoGdrModeDisable;
@@ -564,11 +575,8 @@ ncclResult_t ncclTopoCheckGdr(struct ncclTopoSystem* system, int rank, int64_t n
     return ncclSuccess;
   }
 
-  // Force PCIe mapping if path goes through PCI on a C2C system
-  int c;
-  NCCLCHECK(ncclGetLocalCpu(system, g, &c));
-  if (gpu->paths[CPU][c].type == PATH_C2C && distance != PATH_P2C) *gdrMode = ncclTopoGdrModePci;
-  else *gdrMode = ncclTopoGdrModeDefault;
+  // Force PCIe mapping if path goes through PCI on a C2C system.
+  NCCLCHECK(ncclTopoGetDmaBufMapping(system, g, distance, gdrMode));
 
 #ifdef ENABLE_TRACE
   snprintf(gpuNetMsg + strlen(gpuNetMsg), sizeof(gpuNetMsg) - strlen(gpuNetMsg), "distance %d <= %d, read %d, mode %s)",
@@ -576,6 +584,26 @@ ncclResult_t ncclTopoCheckGdr(struct ncclTopoSystem* system, int rank, int64_t n
   TRACE(NCCL_GRAPH | NCCL_NET, "GPU Direct RDMA Enabled for %s", gpuNetMsg);
 #endif
   return ncclSuccess;
+}
+
+ncclResult_t ncclTopoGetGinDmaBufMapping(struct ncclTopoSystem* system, int rank, int64_t deviceId,
+                                         enum ncclTopoGdrMode* mapping) {
+  int deviceIndex, gpuIndex, cpuIndex;
+  NCCLCHECK(ncclTopoIdToIndex(system, GIN, deviceId, &deviceIndex));
+  NCCLCHECK(ncclTopoRankToIndex(system, rank, &gpuIndex, /*showWarn=*/true));
+  NCCLCHECK(ncclGetLocalCpu(system, gpuIndex, &cpuIndex));
+
+  struct ncclTopoNode* gpu = system->nodes[GPU].nodes + gpuIndex;
+  struct ncclTopoNode* device = system->nodes[GIN].nodes + deviceIndex;
+  int distance = gpu->paths[GIN][deviceIndex].type;
+
+  // P2C paths are precomputed only for NET nodes. Apply the same
+  // classification to the selected GIN node before choosing its mapping.
+  if (mergePathType(gpu->paths[CPU][cpuIndex].type, device->paths[CPU][cpuIndex].type) == PATH_P2C) {
+    distance = std::min(PATH_P2C, distance);
+  }
+
+  return ncclTopoGetDmaBufMapping(system, gpuIndex, distance, mapping);
 }
 
 ncclResult_t ncclTopoIsGdrAvail(struct ncclTopoSystem* system, int rank, bool* avail) {

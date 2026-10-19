@@ -114,8 +114,10 @@ ncclResult_t ncclGinConnectOnce(struct ncclComm* comm) {
   }
 
   int nLocalGinDevs;
+  int64_t localGinIds[NCCL_TOPO_MAX_NODES];
   int localGinDevs[NCCL_TOPO_MAX_NODES];
-  NCCLCHECK(ncclTopoGetLocalGinDevs(comm, localGinDevs, &nLocalGinDevs));
+  enum ncclTopoGdrMode localGinMappings[NCCL_TOPO_MAX_NODES];
+  NCCLCHECK(ncclTopoGetLocalGinDevs(comm, localGinIds, localGinDevs, &nLocalGinDevs));
   if (nLocalGinDevs > NCCL_GIN_MAX_CONNECTIONS) {
     ATTN("Found %d local devices, but GIN supports at most %d connections. Using the first %d connections.",
          nLocalGinDevs, NCCL_GIN_MAX_CONNECTIONS, NCCL_GIN_MAX_CONNECTIONS);
@@ -182,6 +184,21 @@ ncclResult_t ncclGinConnectOnce(struct ncclComm* comm) {
     // on NCCL_GIN_PROXY_NTHREADS (atypical — env vars are normally uniform across a job).
     // Extra threads simply idle in the stride loop; no correctness issue.
 
+    if (backend->ginType == NCCL_GIN_TYPE_PROXY) {
+      for (int i = 0; i < nLocalGinDevs; i++) {
+        NCCLCHECKGOTO(ncclTopoGetGinDmaBufMapping(comm->topo, comm->rank, localGinIds[i], localGinMappings + i), ret,
+                      fail);
+      }
+      enum ncclTopoGdrMode mapping = localGinMappings[0];
+      for (int commIdx = 1; commIdx < backend->ginCommCount; commIdx++) {
+        if (localGinMappings[commIdx % nLocalGinDevs] != mapping) {
+          WARN("GIN proxy selected devices require mixed DMA-BUF mappings; this is not supported.");
+          ret = ncclInvalidUsage;
+          goto fail;
+        }
+      }
+    }
+
     for (int commIdx = 0; commIdx < backend->ginCommCount; commIdx++) {
       NCCLCHECKGOTO(backend->ncclGin->listen(backend->ginInstance, localGinDevs[commIdx % nLocalGinDevs],
                                              allHandles + NCCL_NET_HANDLE_MAXSIZE * comm->rank,
@@ -196,6 +213,11 @@ ncclResult_t ncclGinConnectOnce(struct ncclComm* comm) {
       NCCLCHECKGOTO(backend->ncclGin->connect(backend->ginInstance, handles, ginTeam.nRanks, ginTeam.rank,
                                               listenComms[backendIdx], backend->ginComms + commIdx),
                     ret, fail);
+
+      if (backend->ginType == NCCL_GIN_TYPE_PROXY) {
+        enum ncclTopoGdrMode mapping = localGinMappings[commIdx % nLocalGinDevs];
+        NCCLCHECKGOTO(ncclGinProxySetDmaBufMapping(backend->ginComms[commIdx], mapping), ret, fail);
+      }
 
       NCCLCHECKGOTO(backend->ncclGin->closeListen(listenComms[backendIdx]), ret, fail);
       listenComms[backendIdx] = NULL;
