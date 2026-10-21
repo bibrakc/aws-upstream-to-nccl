@@ -110,8 +110,10 @@ static void proxyGinFreeOutstandingOp(struct ginProxyHostGpuCtx* hostGpuCtx, str
   hostGpuCtx->freeOps = op;
 }
 
-static ncclResult_t getDmaBufFd(void* addr, size_t length, int* fd, bool forceNonDataDirect = false) {
+static ncclResult_t getDmaBufFd(void* addr, size_t length, int* fd, enum ncclTopoGdrMode mapping,
+                                bool forceNonDataDirect = false) {
   if (ncclParamDmaBufEnable() == 0) return ncclInvalidUsage;
+  if (mapping != ncclTopoGdrModeDefault && mapping != ncclTopoGdrModePci) return ncclInvalidArgument;
 
 #if CUDA_VERSION >= 11070
   static size_t hostPageSize = ncclOsGetPageSize();
@@ -119,7 +121,7 @@ static ncclResult_t getDmaBufFd(void* addr, size_t length, int* fd, bool forceNo
   ALIGN_SIZE(alignedSize, hostPageSize);
 
 #if CUDA_VERSION >= 12080
-  if (ncclParamIbDataDirect() && !forceNonDataDirect) {
+  if (ncclParamIbDataDirect() && !forceNonDataDirect && mapping == ncclTopoGdrModePci) {
     CUresult status =
       pfn_cuMemGetHandleForAddressRange((void*)fd, (CUdeviceptr)addr, alignedSize, CU_MEM_RANGE_HANDLE_TYPE_DMA_BUF_FD,
                                         CU_MEM_RANGE_FLAG_DMA_BUF_MAPPING_TYPE_PCIE);
@@ -407,9 +409,22 @@ static ncclResult_t ncclGinProxyCloseListen(void* listenComm) {
 
 struct ncclGinProxyCollComm {
   ncclNetProperties_t props;
+  enum ncclTopoGdrMode dmaBufMapping;
   int nRanks;
   void* collComm;
 };
+
+ncclResult_t ncclGinProxySetDmaBufMapping(void* collComm, enum ncclTopoGdrMode mapping) {
+  if (collComm == NULL || (mapping != ncclTopoGdrModeDefault && mapping != ncclTopoGdrModePci)) {
+    return ncclInvalidArgument;
+  }
+
+  struct ncclGinProxyCollComm* cComm = (struct ncclGinProxyCollComm*)collComm;
+  cComm->dmaBufMapping = mapping;
+  INFO(NCCL_INIT | NCCL_NET, "GIN proxy DMA-BUF mapping: name=%s mode=%s source=topology",
+       cComm->props.name ? cComm->props.name : "unknown", mapping == ncclTopoGdrModePci ? "PCIe" : "Default");
+  return ncclSuccess;
+}
 
 ncclResult_t ncclGinProxyFlushesAllPutsOnAnySignal(void* collComm, bool* flushesAll) {
   struct ncclGinProxyCollComm* cComm = (struct ncclGinProxyCollComm*)collComm;
@@ -455,17 +470,18 @@ static ncclResult_t ncclGinProxyRegMrSym(void* ginCtx, void* addr, size_t size, 
     if (ncclParamDmaBufEnable() && (cComm->props.ptrSupport & NCCL_PTR_DMABUF)) {
       ncclResult_t registrationResult = ncclSuccess;
       int dmabufFd = -1;
-      dmabufResult = getDmaBufFd(addr, size, &dmabufFd);
+      dmabufResult = getDmaBufFd(addr, size, &dmabufFd, cComm->dmaBufMapping);
       if (dmabufResult == ncclSuccess) {
         registrationResult =
           rmaBackend->regMrSymDmaBuf(cComm->collComm, addr, size, type, 0, dmabufFd, mrFlags, mhandle);
         close(dmabufFd);
       }
       if (registrationResult != ncclSuccess) {
-        // This code path assumes if one MR enters this path, all others will too.
-        // Mixed usage of DataDirect and non-DataDirect breaks GIN ordering guarantees.
+        // All symmetric CUDA MRs on this communicator must use one DataDirect
+        // policy to preserve GIN ordering. A per-MR fallback to non-DataDirect
+        // registration is safe only if every MR takes the same fallback.
         dmabufFd = -1;
-        dmabufResult = getDmaBufFd(addr, size, &dmabufFd, true);
+        dmabufResult = getDmaBufFd(addr, size, &dmabufFd, cComm->dmaBufMapping, true);
         if (dmabufResult == ncclSuccess) {
           NCCLCHECK(rmaBackend->regMrSymDmaBuf(cComm->collComm, addr, size, type, 0, dmabufFd, mrFlags, mhandle));
           close(dmabufFd);

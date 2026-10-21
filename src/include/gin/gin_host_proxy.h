@@ -13,6 +13,7 @@
 #include <stdint.h>
 #include <linux/types.h>
 #include "nccl.h"
+#include "graph.h"
 #include "gin/gin_host.h"
 #include "plugin/nccl_gin.h"
 
@@ -20,6 +21,7 @@ extern ncclGin_t ncclGinProxy;
 extern int ncclGinProxyVersion;
 
 ncclResult_t ncclGinProxyInit(struct ncclComm* comm);
+ncclResult_t ncclGinProxySetDmaBufMapping(void* collComm, enum ncclTopoGdrMode mapping);
 ncclResult_t ncclGinProxyFlushesAllPutsOnAnySignal(void* collComm, bool* flushesAll);
 
 #endif
