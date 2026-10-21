@@ -51,8 +51,8 @@ enum ncclTopoGdrMode {
 };
 ncclResult_t ncclTopoCheckGdr(struct ncclTopoSystem* topo, int rank, int64_t netId, int read,
                               enum ncclTopoGdrMode* gdrMode);
-ncclResult_t ncclTopoGetGinDmaBufMapping(struct ncclTopoSystem* system, int rank, int64_t deviceId,
-                                         enum ncclTopoGdrMode* mapping);
+ncclResult_t ncclTopoGetDmaBufMapping(struct ncclTopoSystem* system, int rank, int deviceType, int64_t deviceId,
+                                      enum ncclTopoGdrMode* mapping);
 
 enum ncclTopoFlushType {
   ncclTopoFlushNone = 0,   // no flush needed

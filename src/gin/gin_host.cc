@@ -9,6 +9,7 @@
 #include "gin.h"
 #include "param.h"
 #include "graph.h"
+#include "graph/topo.h"
 #include "transport.h"
 #include "register_inline.h"
 #include "gin/gin_host.h"
@@ -184,9 +185,11 @@ ncclResult_t ncclGinConnectOnce(struct ncclComm* comm) {
     // on NCCL_GIN_PROXY_NTHREADS (atypical — env vars are normally uniform across a job).
     // Extra threads simply idle in the stride loop; no correctness issue.
 
+    // Only the built-in proxy delegates symmetric DMA-BUF registration to NCCL.
+    // External GIN backends own their registration and mapping policy.
     if (backend->ginType == NCCL_GIN_TYPE_PROXY) {
       for (int i = 0; i < nLocalGinDevs; i++) {
-        NCCLCHECKGOTO(ncclTopoGetGinDmaBufMapping(comm->topo, comm->rank, localGinIds[i], localGinMappings + i), ret,
+        NCCLCHECKGOTO(ncclTopoGetDmaBufMapping(comm->topo, comm->rank, GIN, localGinIds[i], localGinMappings + i), ret,
                       fail);
       }
       enum ncclTopoGdrMode mapping = localGinMappings[0];

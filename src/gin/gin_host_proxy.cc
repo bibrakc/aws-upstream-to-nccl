@@ -374,7 +374,6 @@ static ncclResult_t ncclGinProxyCloseListen(void* listenComm) {
 
 struct ncclGinProxyCollComm {
   ncclNetProperties_t props;
-  int dev;
   enum ncclTopoGdrMode dmaBufMapping;
   int nRanks;
   void* collComm;
@@ -387,7 +386,7 @@ ncclResult_t ncclGinProxySetDmaBufMapping(void* collComm, enum ncclTopoGdrMode m
 
   struct ncclGinProxyCollComm* cComm = (struct ncclGinProxyCollComm*)collComm;
   cComm->dmaBufMapping = mapping;
-  INFO(NCCL_INIT | NCCL_NET, "GIN proxy DMA-BUF mapping: device=%d name=%s mode=%s source=topology", cComm->dev,
+  INFO(NCCL_INIT | NCCL_NET, "GIN proxy DMA-BUF mapping: name=%s mode=%s source=topology",
        cComm->props.name ? cComm->props.name : "unknown", mapping == ncclTopoGdrModePci ? "PCIe" : "Default");
   return ncclSuccess;
 }
@@ -406,7 +405,6 @@ static ncclResult_t ncclGinProxyConnect(void* ctx, void* handles[], int nranks, 
   struct ncclGinProxyCollComm* cComm = NULL;
   struct ncclGinProxyListenComm* lComm = (struct ncclGinProxyListenComm*)listenComm;
   NCCLCHECK(ncclCalloc(&cComm, 1));
-  cComm->dev = lComm->dev;
   cComm->nRanks = nranks;
   NCCLCHECKGOTO(rmaBackend->getProperties(lComm->dev, &cComm->props), ret, end);
   NCCLCHECKGOTO(rmaBackend->connect(ctx, handles, nranks, rank, lComm->listenComm, &cComm->collComm), ret, end);
