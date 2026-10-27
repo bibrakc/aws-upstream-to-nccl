@@ -497,6 +497,7 @@ static ncclResult_t ncclTopoGetDmaBufMappingFromDistance(struct ncclTopoSystem* 
   NCCLCHECK(ncclGetLocalCpu(system, gpuIndex, &cpuIndex));
 
   struct ncclTopoNode* gpu = system->nodes[GPU].nodes + gpuIndex;
+  // Force PCIe mapping if the device path goes through PCI on a C2C system.
   *mapping =
     gpu->paths[CPU][cpuIndex].type == PATH_C2C && distance != PATH_P2C ? ncclTopoGdrModePci : ncclTopoGdrModeDefault;
   return ncclSuccess;
@@ -575,7 +576,6 @@ ncclResult_t ncclTopoCheckGdr(struct ncclTopoSystem* system, int rank, int64_t n
     return ncclSuccess;
   }
 
-  // Force PCIe mapping if path goes through PCI on a C2C system.
   NCCLCHECK(ncclTopoGetDmaBufMappingFromDistance(system, g, distance, gdrMode));
 
 #ifdef ENABLE_TRACE

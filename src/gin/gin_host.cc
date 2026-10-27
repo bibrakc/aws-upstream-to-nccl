@@ -153,7 +153,6 @@ ncclResult_t ncclGinConnectOnce(struct ncclComm* comm) {
 
   for (int backendIdx = 0; backendIdx < ginState->numActiveBackends; backendIdx++) {
     backend = &ginState->backends[backendIdx];
-    enum ncclTopoGdrMode dmaBufMapping = ncclTopoGdrModeDisable;
 
     NCCLCHECKGOTO(backend->ncclGin->devices(&ndev), ret, fail);
     if (ndev <= 0) {
@@ -186,23 +185,6 @@ ncclResult_t ncclGinConnectOnce(struct ncclComm* comm) {
     // on NCCL_GIN_PROXY_NTHREADS (atypical — env vars are normally uniform across a job).
     // Extra threads simply idle in the stride loop; no correctness issue.
 
-    // Only the built-in proxy delegates symmetric DMA-BUF registration to NCCL.
-    // External GIN backends own their registration and mapping policy.
-    if (backend->ginType == NCCL_GIN_TYPE_PROXY) {
-      NCCLCHECKGOTO(ncclTopoGetDmaBufMapping(comm->topo, comm->rank, GIN, localGinIds[0], &dmaBufMapping), ret, fail);
-      for (int commIdx = 1; commIdx < backend->ginCommCount; commIdx++) {
-        enum ncclTopoGdrMode candidate;
-        NCCLCHECKGOTO(ncclTopoGetDmaBufMapping(comm->topo, comm->rank, GIN, localGinIds[commIdx % nLocalGinDevs],
-                                               &candidate),
-                      ret, fail);
-        if (candidate != dmaBufMapping) {
-          WARN("GIN proxy selected devices require mixed DMA-BUF mappings; this is not supported.");
-          ret = ncclInvalidUsage;
-          goto fail;
-        }
-      }
-    }
-
     for (int commIdx = 0; commIdx < backend->ginCommCount; commIdx++) {
       NCCLCHECKGOTO(backend->ncclGin->listen(backend->ginInstance, localGinDevs[commIdx % nLocalGinDevs],
                                              allHandles + NCCL_NET_HANDLE_MAXSIZE * comm->rank,
@@ -227,12 +209,14 @@ ncclResult_t ncclGinConnectOnce(struct ncclComm* comm) {
                                               listenComms[backendIdx], backend->ginComms + commIdx, comm->abortFlag),
                     ret, fail);
 
-      if (backend->ginType == NCCL_GIN_TYPE_PROXY) {
-        NCCLCHECKGOTO(ncclGinProxySetDmaBufMapping(backend->ginComms[commIdx], dmaBufMapping), ret, fail);
-      }
-
       NCCLCHECKGOTO(backend->ncclGin->closeListen(listenComms[backendIdx]), ret, fail);
       listenComms[backendIdx] = NULL;
+    }
+
+    // Only the built-in proxy delegates symmetric DMA-BUF registration to NCCL.
+    // External GIN backends own their registration and mapping policy.
+    if (backend->ginType == NCCL_GIN_TYPE_PROXY) {
+      NCCLCHECKGOTO(ncclGinProxyConfigureDmaBufMapping(comm, localGinIds, nLocalGinDevs, backend), ret, fail);
     }
   }
 

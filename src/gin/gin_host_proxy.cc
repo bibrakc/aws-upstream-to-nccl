@@ -15,6 +15,7 @@
 #include "nccl_device/gin/gin_device_common.h"
 #include "compiler.h"
 #include "comm.h"
+#include "graph/topo.h"
 #include "proxy_gpucontext/gpucontext.h"
 
 NCCL_PARAM(GinProxyQueueSize, "GIN_PROXY_QUEUE_SIZE", -1);
@@ -414,15 +415,33 @@ struct ncclGinProxyCollComm {
   void* collComm;
 };
 
-ncclResult_t ncclGinProxySetDmaBufMapping(void* collComm, enum ncclTopoGdrMode mapping) {
-  if (collComm == NULL || (mapping != ncclTopoGdrModeDefault && mapping != ncclTopoGdrModePci)) {
+ncclResult_t ncclGinProxyConfigureDmaBufMapping(struct ncclComm* comm, const int64_t* localGinIds, int nLocalGinDevs,
+                                                struct ncclGinBackendState* backend) {
+  if (comm == NULL || localGinIds == NULL || nLocalGinDevs <= 0 || backend == NULL ||
+      backend->ginType != NCCL_GIN_TYPE_PROXY || backend->ginCommCount <= 0) {
     return ncclInvalidArgument;
   }
 
-  struct ncclGinProxyCollComm* cComm = (struct ncclGinProxyCollComm*)collComm;
-  cComm->dmaBufMapping = mapping;
-  INFO(NCCL_INIT | NCCL_NET, "GIN proxy DMA-BUF mapping: name=%s mode=%s source=topology",
-       cComm->props.name ? cComm->props.name : "unknown", mapping == ncclTopoGdrModePci ? "PCIe" : "Default");
+  enum ncclTopoGdrMode mapping;
+  NCCLCHECK(ncclTopoGetDmaBufMapping(comm->topo, comm->rank, GIN, localGinIds[0], &mapping));
+  if (mapping != ncclTopoGdrModeDefault && mapping != ncclTopoGdrModePci) return ncclInvalidArgument;
+  for (int commIdx = 1; commIdx < backend->ginCommCount; commIdx++) {
+    enum ncclTopoGdrMode candidate;
+    NCCLCHECK(ncclTopoGetDmaBufMapping(comm->topo, comm->rank, GIN, localGinIds[commIdx % nLocalGinDevs], &candidate));
+    if (candidate != ncclTopoGdrModeDefault && candidate != ncclTopoGdrModePci) return ncclInvalidArgument;
+    if (candidate != mapping) {
+      WARN("GIN proxy selected devices require mixed DMA-BUF mappings; this is not supported.");
+      return ncclInvalidUsage;
+    }
+  }
+
+  for (int commIdx = 0; commIdx < backend->ginCommCount; commIdx++) {
+    if (backend->ginComms[commIdx] == NULL) return ncclInvalidArgument;
+    struct ncclGinProxyCollComm* cComm = (struct ncclGinProxyCollComm*)backend->ginComms[commIdx];
+    cComm->dmaBufMapping = mapping;
+    INFO(NCCL_INIT | NCCL_NET, "GIN proxy DMA-BUF mapping: name=%s mode=%s source=topology",
+         cComm->props.name ? cComm->props.name : "unknown", mapping == ncclTopoGdrModePci ? "PCIe" : "Default");
+  }
   return ncclSuccess;
 }
 
